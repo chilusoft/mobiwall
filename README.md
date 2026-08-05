@@ -1,6 +1,6 @@
 # MobiWall – Mobile Firewall
 
-A Flutter app that acts as a **firewall for Android**, letting you block selected apps from using **WiFi** and **mobile data**.
+A free and open-source Flutter app that acts as a **firewall for Android**, letting you block selected apps from using **WiFi** and **mobile data**. It is available for Android only because iOS does not allow third-party apps to inspect or control other apps' network traffic — a restriction we cannot bypass.
 
 ## Features
 
@@ -13,7 +13,19 @@ A Flutter app that acts as a **firewall for Android**, letting you block selecte
 ## Platform support
 
 - **Android**: Supported. Requires VPN permission; no root.
-- **iOS**: Not supported. iOS does not allow third-party apps to control other apps’ network access.
+- **iOS**: Not supported. Apple does not allow third-party apps on iOS to inspect or control other apps' network traffic, and there is no public API that provides this level of access. This is a platform-level restriction that we cannot bypass.
+
+## Technical overview
+
+MobiWall is built with **Flutter** for the cross-platform UI and **Kotlin** for the Android-specific firewall engine.
+
+- **Frontend**: Flutter / Dart screens handle the app list, blocking toggles, domain/IP rules, and active-connections monitoring.
+- **Platform channel**: Dart calls are forwarded to a custom Android plugin (`FirewallPlugin`) that exposes the native firewall API.
+- **VPN service**: `FirewallVpnService` extends Android's `VpnService` and creates a local VPN tunnel. No traffic is sent to an external server.
+- **App blocking**: By default, only the UIDs of blocked apps are routed through the VPN; all other apps are added as disallowed applications so they bypass the tunnel and keep normal connectivity.
+- **Domain/IP blocking & monitoring**: When domain/IP rules are active or connection monitoring is enabled, all traffic is routed through the VPN. The packet tunnel (`PacketTunnel`) parses IPv4/UDP/DNS packets, drops blocked IP addresses, returns fake DNS responses for blocked domains, and records per-remote-endpoint traffic statistics.
+- **Persistence**: Block lists and monitoring settings are stored locally using Android `SharedPreferences`.
+- **Foreground service**: The VPN runs as a foreground service with a persistent notification so Android does not kill it while the firewall is active.
 
 ## How to run
 
@@ -67,4 +79,4 @@ flutter build apk
 
 ## License
 
-This project is provided as-is for learning and use on your own device.
+MobiWall is **free and open-source software**. This project is provided as-is for learning and use on your own device. Contributions and feedback are welcome.
