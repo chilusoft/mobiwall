@@ -44,3 +44,6 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 **/*:Zone.Identifier
+
+# Icon generator script (used to generate assets; not needed in version control)
+scripts/generate_icons.py
