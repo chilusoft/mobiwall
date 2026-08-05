@@ -69,6 +69,48 @@ flutter devices
 flutter run
 ```
 
+### Alternative: USB forwarding with usbipd-win
+
+If you prefer a wired USB connection from WSL2, use **usbipd-win**. It forwards the USB device from Windows into WSL2 so ADB sees it as a local device.
+
+**Install usbipd-win on Windows (PowerShell admin):**
+
+```powershell
+winget install --interactive --exact dorssel.usbipd-win
+```
+
+**Attach the Android device to WSL2:**
+
+1. Plug the Android device into Windows via USB and enable USB debugging.
+2. In Windows PowerShell (admin), list USB devices:
+   ```powershell
+   usbipd list
+   ```
+   Example output:
+   ```
+   BUSID  VID:PID   DEVICE                          STATE
+   1-2    18d1:4ee7 Google Pixel, Android Phone...  Not shared
+   ```
+3. Bind and attach the device to WSL2 (replace `1-2` with your device's BUSID):
+   ```powershell
+   usbipd bind --busid 1-2
+   usbipd attach --wsl --busid 1-2
+   ```
+
+**Use the device in WSL2:**
+
+```bash
+adb devices
+flutter devices
+flutter run
+```
+
+When finished, detach it from Windows:
+
+```powershell
+usbipd detach --busid 1-2
+```
+
 ## How to use
 
 1. **Grant VPN permission**  
