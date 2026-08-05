@@ -12,15 +12,21 @@ import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import kotlin.concurrent.thread
 
 /**
- * VPN-based firewall service. Establishes a local VPN and uses addDisallowedApplication
- * so that only blocked apps' traffic goes through the VPN (and is dropped). All other
- * apps bypass the VPN and keep normal network access.
+ * VPN-based firewall service. Establishes a local VPN.
+ *
+ * In app-blocking-only mode, only the packages of blocked apps are allowed to use the VPN,
+ * so their traffic is intercepted and dropped while all other apps bypass the tunnel.
+ *
+ * In domain/IP blocking or connection-monitoring mode, all traffic is routed through the VPN
+ * so PacketTunnel can filter DNS/UDP and collect statistics. TCP is currently not forwarded
+ * in that mode (see PacketTunnel).
  */
 class FirewallVpnService : VpnService() {
 
@@ -96,28 +102,46 @@ class FirewallVpnService : VpnService() {
             .build()
         startForeground(notificationId, notification)
         try {
+            var useDefaultRoute = true
             val builder = Builder()
                 .setSession("MobiWall")
                 .setMtu(1500)
                 .addAddress("10.0.0.2", 24)
-                .addRoute("0.0.0.0", 0)
                 .addDnsServer("8.8.8.8")
                 .setBlocking(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 if (!useDomainIpBlock) {
                     val installed = packageManager.getInstalledApplications(0)
+                    val blockedPackages = mutableListOf<String>()
                     for (app in installed) {
                         if (app.uid == android.os.Process.myUid()) continue
-                        if (!blockedUids.contains(app.uid.toString())) {
+                        if (blockedUids.contains(app.uid.toString())) {
                             try {
-                                builder.addDisallowedApplication(app.packageName)
-                            } catch (_: Exception) { }
+                                builder.addAllowedApplication(app.packageName)
+                                blockedPackages.add(app.packageName)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to add allowed (blocked) app ${app.packageName}", e)
+                            }
                         }
                     }
+                    if (blockedPackages.isEmpty()) {
+                        // No apps are blocked. Route a non-routable TEST-NET block so the VPN
+                        // is technically active but does not capture real traffic, and disallow
+                        // MobiWall itself so the firewall UI keeps working.
+                        useDefaultRoute = false
+                        try {
+                            builder.addDisallowedApplication(packageName)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to disallow self when no blocked apps", e)
+                        }
+                    }
+                    Log.i(TAG, "App-blocking mode: ${blockedPackages.size} package(s) routed through VPN (defaultRoute=$useDefaultRoute)")
                 }
-                try {
-                    builder.addDisallowedApplication(packageName)
-                } catch (_: Exception) { }
+            }
+            if (useDefaultRoute) {
+                builder.addRoute("0.0.0.0", 0)
+            } else {
+                builder.addRoute("192.0.2.0", 24)
             }
             vpnInterface = builder.establish()
             if (vpnInterface != null) {
@@ -224,6 +248,7 @@ class FirewallVpnService : VpnService() {
     }
 
     companion object {
+        private const val TAG = "FirewallVpnService"
         @Volatile
         private var instance: FirewallVpnService? = null
         fun getActiveConnectionsSnapshot(): List<Map<String, Any>> =

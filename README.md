@@ -22,7 +22,7 @@ MobiWall is built with **Flutter** for the cross-platform UI and **Kotlin** for 
 - **Frontend**: Flutter / Dart screens handle the app list, blocking toggles, domain/IP rules, and active-connections monitoring.
 - **Platform channel**: Dart calls are forwarded to a custom Android plugin (`FirewallPlugin`) that exposes the native firewall API.
 - **VPN service**: `FirewallVpnService` extends Android's `VpnService` and creates a local VPN tunnel. No traffic is sent to an external server.
-- **App blocking**: By default, only the UIDs of blocked apps are routed through the VPN; all other apps are added as disallowed applications so they bypass the tunnel and keep normal connectivity.
+- **App blocking**: Only the packages of blocked apps are allowed to use the VPN tunnel, so their traffic is intercepted and dropped. All other apps bypass the tunnel and keep normal connectivity.
 - **Domain/IP blocking & monitoring**: When domain/IP rules are active or connection monitoring is enabled, all traffic is routed through the VPN. The packet tunnel (`PacketTunnel`) parses IPv4/UDP/DNS packets, drops blocked IP addresses, returns fake DNS responses for blocked domains, and records per-remote-endpoint traffic statistics.
 - **Persistence**: Block lists and monitoring settings are stored locally using Android `SharedPreferences`.
 - **Foreground service**: The VPN runs as a foreground service with a persistent notification so Android does not kill it while the firewall is active.
@@ -60,14 +60,13 @@ flutter build apk
 - The app uses a **local VPN** (no data is sent to an external VPN server).
 - With the firewall ON, the VPN is active and shows in the status bar.
 - Traffic is filtered by **UID** (Linux user ID of each app). Blocked UIDs are not allowed network access.
-- The VPN currently uses a **limited route** (`1.0.0.0/8`) so that normal internet traffic is not routed through the VPN and the device stays online. For a full firewall that blocks all traffic from selected apps, the VPN would need to use a default route and implement full packet forwarding (see “Limitations” below).
+- **App-blocking mode**: the VPN uses a default route, but only the packages of blocked apps are allowed to enter the tunnel. Unblocked apps bypass the tunnel entirely.
+- **Domain/IP or monitoring mode**: the VPN uses a default route and all traffic enters the tunnel. DNS and UDP are filtered/forwarded; TCP is currently not forwarded (see “Limitations” below).
 
 ## Limitations
 
 - **No per-connection type (WiFi vs mobile)**: Blocking applies to both WiFi and mobile data. Separate WiFi-only or mobile-only blocking would require more logic (e.g. checking network type before allowing/blocking).
-- **VPN route**: The demo uses a non-default route so the phone’s main internet keeps working. To block selected apps from *all* traffic while allowing others, you’d need to:
-  - Use a default route (`0.0.0.0/0`) in the VPN, and
-  - Implement full packet forwarding (parse packets, match UID via `/proc/net/tcp`, and forward allowed traffic). This is a larger change and often done with native code (e.g. C) for performance.
+- **Domain/IP and monitoring modes affect all apps**: When domain/IP rules or connection monitoring is active, all traffic is routed through the VPN. `PacketTunnel` currently filters DNS/UDP but **does not forward TCP**, so most internet traffic will stop working in those modes until TCP forwarding is implemented.
 - **iOS**: Not supported due to platform restrictions.
 
 ## Permissions
