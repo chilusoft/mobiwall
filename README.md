@@ -41,6 +41,34 @@ Build an APK:
 flutter build apk
 ```
 
+## Running from WSL2 on a physical Android device
+
+WSL2 does not have direct access to USB devices, so `flutter run` will not see a phone plugged into Windows. The easiest workaround is **ADB over Wi-Fi**.
+
+One-time setup:
+
+1. On the Android device, enable **Developer options** and **USB debugging**.
+2. Plug the device into Windows via USB and authorize the debugging connection.
+3. On Windows (or any host where the device is already authorized), run:
+   ```bash
+   adb tcpip 5555
+   ```
+4. Disconnect the USB cable.
+5. Find the device's Wi-Fi IP address (Settings > Wi-Fi > tap the connected network).
+
+Connect from WSL2:
+
+```bash
+./scripts/connect_android_wsl.sh 192.168.1.123
+```
+
+Then verify the device is visible and run the app:
+
+```bash
+flutter devices
+flutter run
+```
+
 ## How to use
 
 1. **Grant VPN permission**  
