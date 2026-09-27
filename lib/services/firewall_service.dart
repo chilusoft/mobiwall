@@ -150,4 +150,15 @@ class FirewallService {
         .map((e) => (e as Map<Object?, Object?>))
         .toList();
   }
+
+  /// Returns true if the app is already ignoring battery optimizations.
+  static Future<bool> isIgnoringBatteryOptimizations() async {
+    return (await _channel.invokeMethod<bool>('isIgnoringBatteryOptimizations')) ?? false;
+  }
+
+  /// Requests battery optimization exemption.
+  /// Returns true if already exempt, false if the request dialog was launched.
+  static Future<bool> requestBatteryOptimizationExemption() async {
+    return (await _channel.invokeMethod<bool>('requestBatteryOptimizationExemption')) ?? false;
+  }
 }

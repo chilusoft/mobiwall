@@ -2,6 +2,9 @@ package com.chilusoft.mobiwall
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -112,6 +115,30 @@ class FirewallPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 result.success(null)
             }
             "isFirewallRunning" -> result.success(FirewallVpnService.isRunning())
+            "isIgnoringBatteryOptimizations" -> {
+                val pm = ctx.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
+                result.success(pm.isIgnoringBatteryOptimizations(ctx.packageName))
+            }
+            "requestBatteryOptimizationExemption" -> {
+                val pm = ctx.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
+                if (pm.isIgnoringBatteryOptimizations(ctx.packageName)) {
+                    result.success(true)
+                } else {
+                    if (act == null) {
+                        result.error("UNAVAILABLE", "Activity not available", null)
+                        return@onMethodCall
+                    }
+                    try {
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${ctx.packageName}")
+                        }
+                        act.startActivity(intent)
+                        result.success(false)
+                    } catch (e: Exception) {
+                        result.error("ERROR", e.message, null)
+                    }
+                }
+            }
             "restartFirewall" -> {
                 if (FirewallVpnService.isRunning()) {
                     ctx.startService(Intent(ctx, FirewallVpnService::class.java).apply {

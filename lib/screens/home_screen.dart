@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_info.dart';
 import '../services/firewall_service.dart';
+import '../services/theme_service.dart';
 import 'active_connections_screen.dart';
 import 'domain_ip_block_screen.dart';
 
@@ -29,6 +30,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Set<String> _blockedUidsMobile = {};
   bool _firewallOn = false;
   bool _vpnPermissionGranted = false;
+  bool _batteryOptIgnored = false;
   bool _loading = true;
   String? _error;
 
@@ -72,6 +74,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     try {
       await _requestNotificationPermission();
       final granted = await FirewallService.isVpnPermissionGranted();
+      final batteryOptIgnored = await FirewallService.isIgnoringBatteryOptimizations();
       final wifiUids = await FirewallService.getBlockedUidsWifi();
       final mobileUids = await FirewallService.getBlockedUidsMobile();
       final apps = await FirewallService.getInstalledApps();
@@ -80,6 +83,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final usageCounts = _parseUsageCounts(usageJson);
       setState(() {
         _vpnPermissionGranted = granted;
+        _batteryOptIgnored = batteryOptIgnored;
         _blockedUidsWifi = wifiUids.toSet();
         _blockedUidsMobile = mobileUids.toSet();
         _apps = apps.map((e) => AppInfo.fromMap(e)).toList();
@@ -172,6 +176,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _checkVpnPermission();
   }
 
+  Future<void> _requestBatteryOptimizationExemption() async {
+    final result = await FirewallService.requestBatteryOptimizationExemption();
+    if (result) {
+      setState(() => _batteryOptIgnored = true);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Battery optimization is already disabled for MobiWall')),
+        );
+      }
+    }
+  }
+
   Future<void> _toggleFirewall(bool on) async {
     if (!_vpnPermissionGranted && on) {
       await _requestVpnPermission();
@@ -249,6 +265,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         title: const Text('MobiWall Firewall'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
+          ValueListenableBuilder<ThemeMode>(
+            valueListenable: ThemeService.themeNotifier,
+            builder: (context, themeMode, _) {
+              final isDark = themeMode == ThemeMode.dark;
+              return IconButton(
+                icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode),
+                onPressed: ThemeService.toggleTheme,
+                tooltip: isDark ? 'Switch to light mode' : 'Switch to dark mode',
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loading ? null : _load,
@@ -290,6 +317,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                           children: [
                             _buildFirewallCard(),
+                            const SizedBox(height: 12),
+                            _buildBatteryOptimizationCard(),
                             const SizedBox(height: 12),
                             _buildDomainIpBlockCard(context),
                             const SizedBox(height: 12),
@@ -425,6 +454,53 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 child: const Text('Grant VPN permission'),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBatteryOptimizationCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(
+              _batteryOptIgnored ? Icons.battery_saver : Icons.battery_alert,
+              size: 32,
+              color: _batteryOptIgnored
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Battery optimization',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  Text(
+                    'Exempt MobiWall from battery optimization to keep the firewall running',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+            if (!_batteryOptIgnored)
+              FilledButton.tonal(
+                onPressed: _requestBatteryOptimizationExemption,
+                child: const Text('Request'),
+              )
+            else
+              Icon(
+                Icons.check_circle,
+                color: Theme.of(context).colorScheme.primary,
+              ),
           ],
         ),
       ),

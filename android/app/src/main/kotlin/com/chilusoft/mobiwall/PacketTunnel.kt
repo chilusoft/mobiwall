@@ -6,6 +6,8 @@ import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
@@ -169,7 +171,10 @@ object PacketTunnel {
                         // Forward other UDP
                         forwardUdp(vpnService, buffer, read, output, correctSrcIp, correctDstIp)
                     }
-                    IPPROTO_TCP -> { /* TCP forwarding not implemented; packet dropped */ }
+                    IPPROTO_TCP -> {
+                        // Forward TCP packets so non-blocked domains keep working
+                        forwardTcp(vpnService, buffer, read, output, correctSrcIp, correctDstIp)
+                    }
                     else -> { /* drop other protocols */ }
                 }
             } catch (e: Exception) {
@@ -351,5 +356,104 @@ object PacketTunnel {
                 synchronized(output) { output.write(outPacket) }
             } catch (_: Exception) { }
         }
+    }
+
+    /**
+     * Forwards a TCP packet to its destination and relays the response back through the VPN.
+     * This is a best-effort implementation that handles the common case of a single
+     * request-response exchange per packet.
+     */
+    private fun forwardTcp(
+        vpnService: VpnService,
+        buffer: ByteBuffer,
+        read: Int,
+        output: FileOutputStream,
+        srcIp: String,
+        dstIp: String,
+    ) {
+        // IP header is 20 bytes (no options in the common case)
+        // TCP header starts at offset 20
+        if (read < 40) return // need at least IP + TCP header
+        val srcPort = buffer.getShort(20).toInt() and 0xFFFF
+        val dstPort = buffer.getShort(22).toInt() and 0xFFFF
+        val tcpDataOffset = ((buffer.get(32).toInt() and 0xF0) shr 4) * 4
+        val payloadStart = 20 + tcpDataOffset
+        val payloadLen = read - payloadStart
+        thread {
+            var sock: Socket? = null
+            try {
+                sock = Socket()
+                vpnService.protect(sock)
+                sock.connect(InetSocketAddress(InetAddress.getByName(dstIp), dstPort), 10000)
+                sock.soTimeout = 10000
+                // Forward payload if present
+                if (payloadLen > 0) {
+                    val payload = ByteArray(payloadLen)
+                    buffer.position(payloadStart)
+                    buffer.get(payload)
+                    sock.getOutputStream().write(payload)
+                    sock.getOutputStream().flush()
+                }
+                // Read response
+                val reply = ByteArray(8192)
+                val replyLen = sock.getInputStream().read(reply)
+                if (replyLen > 0) {
+                    val replyData = reply.copyOf(replyLen)
+                    val outPacket = buildIpTcpPacket(
+                        srcIp = dstIp, srcPort = dstPort,
+                        dstIp = srcIp, dstPort = srcPort,
+                        seqNum = 1, ackNum = 1,
+                        payload = replyData,
+                    )
+                    synchronized(output) { output.write(outPacket) }
+                }
+            } catch (_: Exception) { }
+            finally {
+                try { sock?.close() } catch (_: Exception) { }
+            }
+        }
+    }
+
+    private fun buildIpTcpPacket(
+        srcIp: String,
+        srcPort: Int,
+        dstIp: String,
+        dstPort: Int,
+        seqNum: Int,
+        ackNum: Int,
+        payload: ByteArray,
+    ): ByteArray {
+        val src = InetAddress.getByName(srcIp).address
+        val dst = InetAddress.getByName(dstIp).address
+        val tcpLen = 20 + payload.size
+        val totalLen = 20 + tcpLen
+        val buffer = ByteBuffer.allocate(totalLen).order(ByteOrder.BIG_ENDIAN)
+        // IP header
+        buffer.put(0x45.toByte())
+        buffer.put(0)
+        buffer.putShort(totalLen.toShort())
+        buffer.putShort(0) // identification
+        buffer.putShort(0) // flags + fragment offset
+        buffer.put(64) // TTL
+        buffer.put(IPPROTO_TCP.toByte())
+        buffer.putShort(0) // checksum placeholder
+        buffer.put(src)
+        buffer.put(dst)
+        // TCP header
+        buffer.putShort((srcPort and 0xFFFF).toShort())
+        buffer.putShort((dstPort and 0xFFFF).toShort())
+        buffer.putInt(seqNum)
+        buffer.putInt(ackNum)
+        buffer.put(0x50.toByte()) // data offset = 5 (20 bytes), no options
+        buffer.put(0x18.toByte()) // flags: PSH + ACK
+        buffer.putShort(8192.toShort()) // window size
+        buffer.putShort(0) // checksum placeholder
+        buffer.putShort(0) // urgent pointer
+        // Payload
+        buffer.put(payload)
+        // Fix IP checksum
+        val ipChecksum = ipChecksum(buffer.array(), 0, 20)
+        buffer.putShort(10, (ipChecksum and 0xFFFF).toShort())
+        return buffer.array()
     }
 }
