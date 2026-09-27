@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 import 'screens/home_screen.dart';
 import 'services/theme_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  ThemeService.loadTheme();
+  await ThemeService.loadTheme();
   runApp(const MobiWallApp());
 }
 

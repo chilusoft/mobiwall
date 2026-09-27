@@ -173,7 +173,7 @@ object PacketTunnel {
                     }
                     IPPROTO_TCP -> {
                         // Forward TCP packets so non-blocked domains keep working
-                        forwardTcp(vpnService, buffer, read, output, correctSrcIp, correctDstIp)
+                        handleTcpPacket(vpnService, buffer, read, output, correctSrcIp, correctDstIp)
                     }
                     else -> { /* drop other protocols */ }
                 }
@@ -358,12 +358,29 @@ object PacketTunnel {
         }
     }
 
+    private class TcpConnection(
+        val key: String,
+        val srcIp: String,
+        val srcPort: Int,
+        val dstIp: String,
+        val dstPort: Int,
+        val sock: Socket,
+        var nextSeq: Long = 1,
+        var nextAck: Long = 1,
+        var closed: Boolean = false,
+    )
+    }
+
+    private val tcpConnections = ConcurrentHashMap<String, TcpConnection>()
+
+    private fun getTcpConnectionKey(srcIp: String, srcPort: Int, dstIp: String, dstPort: Int) =
+        "$srcIp:$srcPort->$dstIp:$dstPort"
+
     /**
-     * Forwards a TCP packet to its destination and relays the response back through the VPN.
-     * This is a best-effort implementation that handles the common case of a single
-     * request-response exchange per packet.
+     * Handles a TCP packet from the VPN tunnel.
+     * Implements a basic TCP proxy: handles SYN (connect), data (forward), FIN (close).
      */
-    private fun forwardTcp(
+    private fun handleTcpPacket(
         vpnService: VpnService,
         buffer: ByteBuffer,
         read: Int,
@@ -371,47 +388,167 @@ object PacketTunnel {
         srcIp: String,
         dstIp: String,
     ) {
-        // IP header is 20 bytes (no options in the common case)
-        // TCP header starts at offset 20
-        if (read < 40) return // need at least IP + TCP header
+        if (read < 40) return
         val srcPort = buffer.getShort(20).toInt() and 0xFFFF
         val dstPort = buffer.getShort(22).toInt() and 0xFFFF
         val tcpDataOffset = ((buffer.get(32).toInt() and 0xF0) shr 4) * 4
         val payloadStart = 20 + tcpDataOffset
         val payloadLen = read - payloadStart
-        thread {
-            var sock: Socket? = null
-            try {
-                sock = Socket()
-                vpnService.protect(sock)
-                sock.connect(InetSocketAddress(InetAddress.getByName(dstIp), dstPort), 10000)
-                sock.soTimeout = 10000
-                // Forward payload if present
-                if (payloadLen > 0) {
-                    val payload = ByteArray(payloadLen)
-                    buffer.position(payloadStart)
-                    buffer.get(payload)
-                    sock.getOutputStream().write(payload)
-                    sock.getOutputStream().flush()
-                }
-                // Read response
-                val reply = ByteArray(8192)
-                val replyLen = sock.getInputStream().read(reply)
-                if (replyLen > 0) {
-                    val replyData = reply.copyOf(replyLen)
-                    val outPacket = buildIpTcpPacket(
+        val seqNum = buffer.getInt(24).toLong() and 0xFFFFFFFFL
+        val ackNum = buffer.getInt(28).toLong() and 0xFFFFFFFFL
+        val flags = buffer.get(33).toInt() and 0xFF
+        val synFlag = (flags and 0x02) != 0
+        val finFlag = (flags and 0x01) != 0
+        val rstFlag = (flags and 0x04) != 0
+
+        val key = getTcpConnectionKey(srcIp, srcPort, dstIp, dstPort)
+
+        if (rstFlag) {
+            tcpConnections.remove(key)?.let { conn ->
+                try { conn.sock.close() } catch (_: Exception) { }
+            }
+            return
+        }
+
+        if (synFlag) {
+            // New connection: remove old if exists, create new socket
+            tcpConnections.remove(key)?.let { conn ->
+                try { conn.sock.close() } catch (_: Exception) { }
+            }
+            thread {
+                var sock: Socket? = null
+                try {
+                    sock = Socket()
+                    vpnService.protect(sock)
+                    sock.connect(InetSocketAddress(InetAddress.getByName(dstIp), dstPort), 15000)
+                    sock.soTimeout = 30000
+                    val conn = TcpConnection(key, srcIp, srcPort, dstIp, dstPort, sock, nextSeq = 1, nextAck = (seqNum + 1))
+                    tcpConnections[key] = conn
+                    // Send SYN-ACK back to device
+                    val synAck = buildIpTcpPacket(
                         srcIp = dstIp, srcPort = dstPort,
                         dstIp = srcIp, dstPort = srcPort,
-                        seqNum = 1, ackNum = 1,
-                        payload = replyData,
+                        seqNum = 0, ackNum = conn.nextAck.toInt(),
+                        flags = 0x12.toByte(), // SYN + ACK
+                        payload = ByteArray(0),
                     )
-                    synchronized(output) { output.write(outPacket) }
+                    synchronized(output) { output.write(synAck) }
+                    // Start forwarding data both ways
+                    forwardTcpData(conn, vpnService, output)
+                } catch (_: Exception) {
+                    tcpConnections.remove(key)
+                    try { sock?.close() } catch (_: Exception) { }
+                    // Send RST to device
+                    try {
+                        val rst = buildIpTcpPacket(
+                            srcIp = dstIp, srcPort = dstPort,
+                            dstIp = srcIp, dstPort = srcPort,
+                            seqNum = 0, ackNum = (seqNum + 1).toInt(),
+                            flags = 0x04.toByte(), // RST
+                            payload = ByteArray(0),
+                        )
+                        synchronized(output) { output.write(rst) }
+                    } catch (_: Exception) { }
                 }
+            }
+            return
+        }
+
+        val conn = tcpConnections[key] ?: return
+
+        // Update ACK number
+        if (payloadLen > 0) {
+            conn.nextAck = (seqNum + payloadLen) and 0xFFFFFFFFL
+        }
+
+        if (finFlag) {
+            // Device wants to close
+            conn.closed = true
+            try {
+                sock?.shutdownOutput()
             } catch (_: Exception) { }
-            finally {
-                try { sock?.close() } catch (_: Exception) { }
+            // Send FIN-ACK back to device
+            try {
+                val finAck = buildIpTcpPacket(
+                    srcIp = dstIp, srcPort = dstPort,
+                    dstIp = srcIp, dstPort = srcPort,
+                    seqNum = conn.nextSeq.toInt(), ackNum = conn.nextAck.toInt(),
+                    flags = 0x11.toByte(), // FIN + ACK
+                    payload = ByteArray(0),
+                )
+                synchronized(output) { output.write(finAck) }
+            } catch (_: Exception) { }
+            // Wait a bit then close
+            thread {
+                Thread.sleep(2000)
+                try { conn.sock.close() } catch (_: Exception) { }
+                tcpConnections.remove(key)
+            }
+            return
+        }
+
+        // Forward payload to destination
+        if (payloadLen > 0 && !conn.closed) {
+            val payload = ByteArray(payloadLen)
+            buffer.position(payloadStart)
+            buffer.get(payload)
+            thread {
+                try {
+                    conn.sock.getOutputStream().write(payload)
+                    conn.sock.getOutputStream().flush()
+                } catch (_: Exception) { }
+            }
+            // Send ACK back to device
+            thread {
+                try {
+                    val ack = buildIpTcpPacket(
+                        srcIp = dstIp, srcPort = dstPort,
+                        dstIp = srcIp, dstPort = srcPort,
+                        seqNum = conn.nextSeq.toInt(), ackNum = conn.nextAck.toInt(),
+                        flags = 0x10.toByte(), // ACK
+                        payload = ByteArray(0),
+                    )
+                    synchronized(output) { output.write(ack) }
+                } catch (_: Exception) { }
             }
         }
+    }
+
+    /**
+     * Forwards data from the remote server back to the device through the VPN.
+     */
+    private fun forwardTcpData(conn: TcpConnection, vpnService: VpnService, output: FileOutputStream) {
+        val replyBuf = ByteArray(8192)
+        while (!conn.closed) {
+            try {
+                val n = conn.sock.getInputStream().read(replyBuf)
+                if (n <= 0) break
+                val data = replyBuf.copyOf(n)
+                val outPacket = buildIpTcpPacket(
+                    srcIp = conn.dstIp, srcPort = conn.dstPort,
+                    dstIp = conn.srcIp, dstPort = conn.srcPort,
+                    seqNum = conn.nextSeq.toInt(), ackNum = conn.nextAck.toInt(),
+                    flags = 0x18.toByte(), // PSH + ACK
+                    payload = data,
+                )
+                conn.nextSeq = (conn.nextSeq + n) and 0xFFFFFFFFL
+                synchronized(output) { output.write(outPacket) }
+            } catch (_: Exception) {
+                break
+            }
+        }
+        // Server closed connection
+        try {
+            val fin = buildIpTcpPacket(
+                srcIp = conn.dstIp, srcPort = conn.dstPort,
+                dstIp = conn.srcIp, dstPort = conn.srcPort,
+                seqNum = conn.nextSeq.toInt(), ackNum = conn.nextAck.toInt(),
+                flags = 0x11.toByte(), // FIN + ACK
+                payload = ByteArray(0),
+            )
+            synchronized(output) { output.write(fin) }
+        } catch (_: Exception) { }
+        conn.closed = true
     }
 
     private fun buildIpTcpPacket(
@@ -421,6 +558,7 @@ object PacketTunnel {
         dstPort: Int,
         seqNum: Int,
         ackNum: Int,
+        flags: Byte,
         payload: ByteArray,
     ): ByteArray {
         val src = InetAddress.getByName(srcIp).address
@@ -445,7 +583,7 @@ object PacketTunnel {
         buffer.putInt(seqNum)
         buffer.putInt(ackNum)
         buffer.put(0x50.toByte()) // data offset = 5 (20 bytes), no options
-        buffer.put(0x18.toByte()) // flags: PSH + ACK
+        buffer.put(flags)
         buffer.putShort(8192.toShort()) // window size
         buffer.putShort(0) // checksum placeholder
         buffer.putShort(0) // urgent pointer
