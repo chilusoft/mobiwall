@@ -15,15 +15,15 @@ class ActiveConnection {
   });
 
   factory ActiveConnection.fromMap(Map<Object?, Object?> map) {
-    final getStr = (Object? k) => (map[k]?.toString()) ?? '';
-    final getInt = (Object? k) {
+    String getStr(Object? k) => (map[k]?.toString()) ?? '';
+    int getInt(Object? k) {
       final v = map[k];
       if (v is int) return v;
       if (v is num) return v.toInt();
       // Platform may send Long as int or as double
       final s = v?.toString() ?? '';
       return int.tryParse(s) ?? 0;
-    };
+    }
     return ActiveConnection(
       host: getStr('host'),
       display: getStr('display').isNotEmpty ? getStr('display') : getStr('host'),

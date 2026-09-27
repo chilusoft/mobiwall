@@ -152,13 +152,21 @@ class _ActiveConnectionsScreenState extends State<ActiveConnectionsScreen> {
     final isIp = _looksLikeIp(c.host);
     if (isIp) {
       final next = Set<String>.from(_blockedIpsWifi);
-      if (block) next.add(c.host); else next.remove(c.host);
+      if (block) {
+        next.add(c.host);
+      } else {
+        next.remove(c.host);
+      }
       _blockedIpsWifi = next;
       await FirewallService.setBlockedIpsWifi(next.toList());
     } else {
       final domain = c.display.toLowerCase();
       final next = Set<String>.from(_blockedDomainsWifi);
-      if (block) next.add(domain); else next.remove(domain);
+      if (block) {
+        next.add(domain);
+      } else {
+        next.remove(domain);
+      }
       _blockedDomainsWifi = next;
       await FirewallService.setBlockedDomainsWifi(next.toList());
     }
@@ -170,13 +178,21 @@ class _ActiveConnectionsScreenState extends State<ActiveConnectionsScreen> {
     final isIp = _looksLikeIp(c.host);
     if (isIp) {
       final next = Set<String>.from(_blockedIpsMobile);
-      if (block) next.add(c.host); else next.remove(c.host);
+      if (block) {
+        next.add(c.host);
+      } else {
+        next.remove(c.host);
+      }
       _blockedIpsMobile = next;
       await FirewallService.setBlockedIpsMobile(next.toList());
     } else {
       final domain = c.display.toLowerCase();
       final next = Set<String>.from(_blockedDomainsMobile);
-      if (block) next.add(domain); else next.remove(domain);
+      if (block) {
+        next.add(domain);
+      } else {
+        next.remove(domain);
+      }
       _blockedDomainsMobile = next;
       await FirewallService.setBlockedDomainsMobile(next.toList());
     }

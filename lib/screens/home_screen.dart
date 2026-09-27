@@ -215,7 +215,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _toggleBlockWifi(AppInfo app, bool block) async {
     _recordAppUsage(app.packageName);
     final newSet = Set<String>.from(_blockedUidsWifi);
-    if (block) newSet.add(app.uidString); else newSet.remove(app.uidString);
+    if (block) {
+      newSet.add(app.uidString);
+    } else {
+      newSet.remove(app.uidString);
+    }
     _blockedUidsWifi = newSet;
     setState(() {});
     try {
@@ -230,7 +234,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _toggleBlockMobile(AppInfo app, bool block) async {
     _recordAppUsage(app.packageName);
     final newSet = Set<String>.from(_blockedUidsMobile);
-    if (block) newSet.add(app.uidString); else newSet.remove(app.uidString);
+    if (block) {
+      newSet.add(app.uidString);
+    } else {
+      newSet.remove(app.uidString);
+    }
     _blockedUidsMobile = newSet;
     setState(() {});
     try {
